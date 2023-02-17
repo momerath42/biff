@@ -20,30 +20,35 @@
                          :as :json}))]
         (and success (or (nil? score) (<= threshold score))))))
 
-(defn new-signin-code [length]
+(defn email-valid? [ctx email]
+  (and email (re-matches #".+@.+\..+" email)))
+
+(defn new-link [{:keys [biff.auth/check-state
+                        biff/base-url
+                        biff/secret
+                        anti-forgery-token]}
+                email]
+  (str base-url "/auth/verify-link/"
+       (bmisc/jwt-encrypt
+        (cond-> {:intent "signin"
+                 :email email
+                 :exp-in (* 60 60)}
+          check-state (assoc :state (butil/sha256 anti-forgery-token)))
+        (secret :biff/jwt-secret))))
+
+(defn new-code [length]
   (let [rng (java.security.SecureRandom/getInstanceStrong)]
     (format (str "%0" length "d")
             (.nextInt rng (dec (int (Math/pow 10 length)))))))
 
-(defn email-valid? [ctx email]
-  (and email (re-matches #".+@.+\..+" email)))
-
-(defn make-signup-link [{:keys [biff/base-url biff/secret anti-forgery-token]} email]
-  (str base-url "/auth/verify-link/"
-       (bmisc/jwt-encrypt
-        {:intent "signup"
-         :email email
-         :exp-in (* 60 60)
-         :state (butil/sha256 anti-forgery-token)}
-        (secret :biff/jwt-secret))))
-
-(defn send-signup-link! [{:keys [biff.auth/email-validator
-                                 biff/db
-                                 biff/send-email
-                                 params]
-                          :as ctx}]
+(defn send-link! [{:keys [biff.auth/email-validator
+                          biff/db
+                          biff/send-email
+                          params]
+                   :as ctx}]
   (let [email (butil/normalize-email (:email params))
-        url (make-signup-link ctx email)]
+        url (new-link ctx email)
+        user-id (delay (bxt/lookup-id db :user/email email))]
     (cond
      (not (passed-recaptcha? ctx))
      {:success false :error "recaptcha"}
@@ -52,27 +57,27 @@
      {:success false :error "invalid-email"}
 
      (not (send-email ctx
-                      {:template :signup-link
+                      {:template :signin-link
                        :to email
                        :url url
-                       :user-exists (some? (bxt/lookup-id db :user/email email))}))
+                       :user-exists (some? @user-id)}))
      {:success false :error "send-failed"}
 
      :else
-     {:success true :email email})))
+     {:success true :email email :user-id @user-id})))
 
-(defn verify-signup-link [{:keys [biff.auth/check-state
-                                  biff/secret
-                                  path-params
-                                  params
-                                  anti-forgery-token]}]
+(defn verify-link [{:keys [biff.auth/check-state
+                           biff/secret
+                           path-params
+                           params
+                           anti-forgery-token]}]
   (let [{:keys [intent email state]} (-> (merge params path-params)
                                          :token
                                          (bmisc/jwt-decrypt (secret :biff/jwt-secret)))
         valid-state (= state (butil/sha256 anti-forgery-token))
         valid-email (= email (:email params))]
     (cond
-     (not= intent "signup")
+     (not= intent "signin")
      {:success false :error "invalid-link"}
 
      (or (not check-state) valid-state valid-email)
@@ -84,103 +89,117 @@
      :else
      {:success false :error "invalid-state"})))
 
-(defn send-signin-code! [{:keys [biff/db biff/send-email params] :as ctx}]
+(defn send-code! [{:keys [biff.auth/email-validator
+                          biff/db
+                          biff/send-email
+                          params]
+                   :as ctx}]
   (let [email (butil/normalize-email (:email params))
-        user-id (bxt/lookup-id db :user/email email)
-        code (new-signin-code 6)]
+        code (new-code 6)
+        user-id (delay (bxt/lookup-id db :user/email email))]
     (cond
      (not (passed-recaptcha? ctx))
      {:success false :error "recaptcha"}
 
-     (nil? user-id)
-     {:success false :error "no-user"}
+     (not (email-validator ctx email))
+     {:success false :error "invalid-email"}
 
      (not (send-email ctx
                       {:template :signin-code
                        :to email
-                       :code code}))
+                       :code code
+                       :user-exists (some? @user-id)}))
      {:success false :error "send-failed"}
 
      :else
-     {:success true :user-id user-id :code code})))
+     {:success true :email email :code code :user-id @user-id})))
 
 ;;; HANDLERS -------------------------------------------------------------------
 
-(defn signup-handler [{:keys [biff.auth/single-opt-in
-                              biff.auth/new-user-tx
-                              biff/db
-                              params]
-                       :as ctx}]
-  (let [{:keys [success error email]} (send-signup-link! ctx)
-        user-id (bxt/lookup-id db :user/email email)]
+(defn send-link-handler [{:keys [biff.auth/single-opt-in
+                                 biff.auth/new-user-tx
+                                 biff/db
+                                 params]
+                          :as ctx}]
+  (let [{:keys [success error email user-id]} (send-link! ctx)]
     (when (and success single-opt-in (not user-id))
-      (bxt/submit-tx ctx (new-user-tx ctx email)))
+      (bxt/submit-tx (assoc ctx :biff.xtdb/retry false) (new-user-tx ctx email)))
     {:status 303
      :headers {"location" (if success
-                            (str "/welcome?email=" (:email params))
-                            (str "/?error=" error))}}))
+                            (str "/link-sent?email=" (:email params))
+                            (str (:on-error params "/") "?error=" error))}}))
 
-(defn verify-signup-handler [{:keys [biff.auth/app-path
-                                     biff.auth/new-user-tx
-                                     biff.xtdb/node
-                                     session
-                                     params
-                                     path-params]
-                              :as req}]
-  (let [{:keys [success error email]} (verify-signup-link req)
+(defn verify-link-handler [{:keys [biff.auth/app-path
+                                   biff.auth/invalid-link-path
+                                   biff.auth/new-user-tx
+                                   biff.xtdb/node
+                                   session
+                                   params
+                                   path-params]
+                            :as req}]
+  (let [{:keys [success error email]} (verify-link req)
         get-user-id #(bxt/lookup-id (xt/db node) :user/email email)
         existing-user-id (when success (get-user-id))
         token (:token (merge params path-params))]
     (when (and success (not existing-user-id))
-      (bxt/submit-tx req
-        (new-user-tx req email)))
+      (bxt/submit-tx req (new-user-tx req email)))
     {:status 303
      :headers {"location" (cond
                            success
                            app-path
 
                            (= error "invalid-state")
-                           (str "/signup/link?token=" token)
+                           (str "/verify-link?token=" token)
 
                            (= error "invalid-email")
-                           (str "/signup/link?error=incorrect-email&token=" token)
+                           (str "/verify-link?error=incorrect-email&token=" token)
 
                            :else
-                           "/?error=invalid-link")}
+                           invalid-link-path)}
      :session (cond-> session
                 success (assoc :uid (or existing-user-id (get-user-id))))}))
 
-(defn signin-handler [{:keys [params] :as ctx}]
-  (let [{:keys [success error user-id code]} (send-signin-code! ctx)]
+(defn send-code-handler [{:keys [biff.auth/single-opt-in
+                                 biff.auth/new-user-tx
+                                 biff/db
+                                 params]
+                          :as ctx}]
+  (let [{:keys [success error email code user-id]} (send-code! ctx)]
     (when success
-      (bxt/submit-tx ctx
-        [{:db/doc-type :biff.auth/code
-          :db.op/upsert {:biff.auth.code/user user-id}
-          :biff.auth.code/code code
-          :biff.auth.code/created-at :db/now
-          :biff.auth.code/failed-attempts 0}]))
+      (bxt/submit-tx (assoc ctx :biff.xtdb/retry false)
+        (concat [{:db/doc-type :biff.auth/code
+                  :db.op/upsert {:biff.auth.code/email email}
+                  :biff.auth.code/code code
+                  :biff.auth.code/created-at :db/now
+                  :biff.auth.code/failed-attempts 0}]
+                (when (and single-opt-in (not user-id))
+                  (new-user-tx ctx email)))))
     {:status 303
      :headers {"location" (if success
-                            (str "/signin/code?email=" (:email params))
-                            (str "/signin?error=" error))}}))
+                            (str "/verify-code?email=" (:email params))
+                            (str (:on-error params "/") "?error=" error))}}))
 
-(defn verify-signin-handler [{:keys [biff.auth/app-path
-                                     biff/db
-                                     params
-                                     session]
-                              :as req}]
+(defn verify-code-handler [{:keys [biff.auth/app-path
+                                   biff.auth/new-user-tx
+                                   biff.xtdb/node
+                                   biff/db
+                                   params
+                                   session]
+                            :as req}]
   (let [email (butil/normalize-email (:email params))
-        code (-> (bxt/lookup db '[{:biff.auth.code/_user [*]}] :user/email email)
-                 :biff.auth.code/_user
-                 first)
+        code (bxt/lookup db :biff.auth.code/email email)
         success (and (passed-recaptcha? req)
                      (some? code)
                      (< (:biff.auth.code/failed-attempts code) 3)
                      (not (btime/elapsed? (:biff.auth.code/created-at code) :now 3 :minutes))
                      (= (:code params) (:biff.auth.code/code code)))
+        get-user-id #(bxt/lookup-id (xt/db node) :user/email email)
+        existing-user-id (when success (get-user-id))
         tx (cond
             success
-            [[::xt/delete (:xt/id code)]]
+            (concat [[::xt/delete (:xt/id code)]]
+                    (when-not existing-user-id
+                      (new-user-tx req email)))
 
             (and (not success)
                  (some? code)
@@ -193,9 +212,9 @@
     (if success
       {:status 303
        :headers {"location" app-path}
-       :session (assoc session :uid (:biff.auth.code/user code))}
+       :session (assoc session :uid (or existing-user-id (get-user-id)))}
       {:status 303
-       :headers {"location" (str "/signin/code?error=invalid-code&email=" email)}})))
+       :headers {"location" (str "/verify-code?error=invalid-code&email=" email)}})))
 
 (defn signout [{:keys [session]}]
   {:status 303
@@ -211,6 +230,7 @@
 
 (def default-options
   #:biff.auth{:app-path "/app"
+              :invalid-link-path "/signin?error=invalid-link"
               :check-state true
               :new-user-tx new-user-tx
               :single-opt-in false
@@ -224,16 +244,16 @@
   {:schema {:biff.auth.code/id :uuid
             :biff.auth/code [:map {:closed true}
                              [:xt/id :biff.auth.code/id]
-                             [:biff.auth.code/user :user/id]
+                             [:biff.auth.code/email :string]
                              [:biff.auth.code/code :string]
                              [:biff.auth.code/created-at inst?]
                              [:biff.auth.code/failed-attempts integer?]]}
    :routes [["/auth" {:middleware [[wrap-options (merge default-options options)]]}
-             ["/signup"             {:post signup-handler}]
-             ["/verify-link/:token" {:get verify-signup-handler}]
-             ["/verify-link"        {:post verify-signup-handler}]
-             ["/signin"             {:post signin-handler}]
-             ["/verify-code"        {:post verify-signin-handler}]
+             ["/send-link"          {:post send-link-handler}]
+             ["/verify-link/:token" {:get verify-link-handler}]
+             ["/verify-link"        {:post verify-link-handler}]
+             ["/send-code"          {:post send-code-handler}]
+             ["/verify-code"        {:post verify-code-handler}]
              ["/signout"            {:post signout}]]]})
 
 ;;; FRONTEND HELPERS -----------------------------------------------------------

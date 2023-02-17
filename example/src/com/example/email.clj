@@ -6,46 +6,33 @@
             [clojure.tools.logging :as log]
             [rum.core :as rum]))
 
-(defn signup-link [{:keys [to url user-exists]}]
+(defn signin-link [{:keys [to url user-exists]}]
   {:to to
    :subject (if user-exists
               (str "Sign in to " settings/app-name)
               (str "Sign up for " settings/app-name))
    :html-body (rum/render-static-markup
                [:html
-                (if user-exists
-                  [:body
-                   [:p "We received a request to sign in to " settings/app-name
-                    " using this email address. Click this link to sign in:"]
-                   [:p [:a {:href url :target "_blank"} "Click here to sign in."]]
-                   [:p "This link will expire in one hour. "
-                    "If you did not request this link, you can ignore this email."]]
-                  [:body
-                   [:p "We received a request to create an account for " settings/app-name
-                    " using this email address. Click this link to sign up:"]
-                   [:p [:a {:href url :target "_blank"} "Click here to sign up."]]
-                   [:p "This link will expire in one hour. "
-                    "If you did not request this link, you can ignore this email."]])])
-   :text-body (if user-exists
-                (str "We received a request to sign in to " settings/app-name
-                     " using this email address. Click this link to sign in:\n"
-                     "\n"
-                     url "\n"
-                     "\n"
-                     "This link will expire in one hour. If you did not request this link, "
-                     "you can ignore this email.")
-                (str "We received a request to create an account for " settings/app-name
-                     " using this email address. Click this link to sign up:\n"
-                     "\n"
-                     url "\n"
-                     "\n"
-                     "This link will expire in one hour. If you did not request this link, "
-                     "you can ignore this email."))
+                [:body
+                 [:p "We received a request to sign in to " settings/app-name
+                  " using this email address. Click this link to sign in:"]
+                 [:p [:a {:href url :target "_blank"} "Click here to sign in."]]
+                 [:p "This link will expire in one hour. "
+                  "If you did not request this link, you can ignore this email."]]])
+   :text-body (str "We received a request to sign in to " settings/app-name
+                   " using this email address. Click this link to sign in:\n"
+                   "\n"
+                   url "\n"
+                   "\n"
+                   "This link will expire in one hour. If you did not request this link, "
+                   "you can ignore this email.")
    :message-stream "outbound"})
 
-(defn signin-code [{:keys [to code]}]
+(defn signin-code [{:keys [to code user-exists]}]
   {:to to
-   :subject (str "Sign in to " settings/app-name)
+   :subject (if user-exists
+              (str "Sign in to " settings/app-name)
+              (str "Sign up for " settings/app-name))
    :html-body (rum/render-static-markup
                [:html
                 [:body
@@ -66,7 +53,7 @@
 
 (defn template [k opts]
   ((case k
-     :signup-link signup-link
+     :signin-link signin-link
      :signin-code signin-code)
    opts))
 

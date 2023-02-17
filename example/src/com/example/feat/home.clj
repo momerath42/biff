@@ -16,8 +16,9 @@
   (ui/page
    (assoc sys ::ui/recaptcha true)
    (biff/form
-    {:action "/auth/signup"
-     :id "signup"}
+    {:action "/auth/send-link"
+     :id "signup"
+     :hidden {:on-error "/"}}
     (biff/recaptcha-callback "submitSignup" "signup")
     [:h2.text-2xl.font-bold (str "Sign up for " settings/app-name)]
     [:.h-3]
@@ -43,7 +44,6 @@
           "invalid-email" "Invalid email. Try again with a different address."
           "send-failed" (str "We weren't able to send an email to that address. "
                              "If the problem persists, try another address.")
-          "invalid-link" "Invalid or expired link. Sign up again to get a new link."
           "There was an error.")]])
     [:.h-1]
     [:.text-sm "Already have an account? " [:a.link {:href "/signin"} "Sign in"] "."]
@@ -51,12 +51,11 @@
     biff/recaptcha-disclosure
     email-disabled-notice)))
 
-(defn welcome [{:keys [params] :as sys}]
+(defn link-sent [{:keys [params] :as sys}]
   (ui/page
    sys
    [:h2.text-xl.font-bold "Check your inbox"]
-   [:p "Welcome to " settings/app-name "! We've sent a sign-in link to "
-    [:span.font-bold (:email params)] "."]))
+   [:p "We've sent a sign-in link to " [:span.font-bold (:email params)] "."]))
 
 (defn verify-email-page [{:keys [params] :as req}]
   (ui/page
@@ -87,8 +86,9 @@
   (ui/page
    (assoc sys ::ui/recaptcha true)
    (biff/form
-    {:action "/auth/signin"
-     :id "signin"}
+    {:action "/auth/send-code"
+     :id "signin"
+     :hidden {:on-error "/signin"}}
     (biff/recaptcha-callback "submitSignin" "signin")
     [:h2.text-2xl.font-bold "Sign in to " settings/app-name]
     [:.h-3]
@@ -97,17 +97,6 @@
                     :type "email"
                     :autocomplete "email"
                     :placeholder "Enter your email address"}]
-     (when-some [error (:error params)]
-       [:.h-1]
-       [:.text-sm.text-red-600
-        (case error
-          "recaptcha" (str "You failed the recaptcha test. Try again, "
-                           "and make sure you aren't blocking scripts from Google.")
-          "no-user" "User doesn't exist. Try again with a different address."
-          "send-failed" (str "We weren't able to send an email to that address. "
-                             "If the problem persists, try another address.")
-          "not-signed-in" "You must be signed in to view that page."
-          "There was an error.")])
      [:.w-3]
      [:button.btn.g-recaptcha
       (merge (when site-key
@@ -115,8 +104,21 @@
                 :data-callback "submitSignin"})
              {:type "submit"})
       "Sign in"]]
+    (when-some [error (:error params)]
+      [:<>
+       [:.h-1]
+       [:.text-sm.text-red-600
+        (case error
+          "recaptcha" (str "You failed the recaptcha test. Try again, "
+                           "and make sure you aren't blocking scripts from Google.")
+          "invalid-email" "Invalid email. Try again with a different address."
+          "send-failed" (str "We weren't able to send an email to that address. "
+                             "If the problem persists, try another address.")
+          "invalid-link" "Invalid or expired link. Sign in to get a new link."
+          "not-signed-in" "You must be signed in to view that page."
+          "There was an error.")]])
     [:.h-1]
-    [:.text-sm [:a.link {:href "/"} "Create an account"]]
+    [:.text-sm "Don't have an account yet? " [:a.link {:href "/"} "Sign up"] "."]
     [:.h-3]
     biff/recaptcha-disclosure
     email-disabled-notice)))
@@ -149,7 +151,7 @@
         "There was an error.")])
    [:.h-3]
    (biff/form
-    {:action "/auth/signin"
+    {:action "/auth/send-code"
      :id "signin"
      :hidden {:email (:email params)}}
     (biff/recaptcha-callback "submitSignin" "signin")
@@ -163,7 +165,7 @@
 (def features
   {:routes [["" {:middleware [mid/wrap-redirect-signed-in]}
              ["/"                  {:get home-page}]]
-            ["/welcome"            {:get welcome}]
-            ["/signup/link"        {:get verify-email-page}]
+            ["/link-sent"          {:get link-sent}]
+            ["/verify-link"        {:get verify-email-page}]
             ["/signin"             {:get signin-page}]
-            ["/signin/code"        {:get enter-code-page}]]})
+            ["/verify-code"        {:get enter-code-page}]]})
