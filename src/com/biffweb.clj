@@ -1040,21 +1040,9 @@
   INSTRUCTIONS
   ============
 
-  You should provide the following pages in your app:
-
-   - /:            Posts to /auth/signup with Recaptcha and shows messages
-                   for the following errors: recaptcha, invalid-email,
-                   send-failed, and invalid-link.
-   - /welcome:     Tells the user to check their inbox for a signup link.
-   - /signup/link: Asks the user to verify their email address. Posts to
-                   /auth/verify-link.
-   - /signin:      Posts to /auth/signin with Recaptcha and shows messages
-                   for the following errors: recaptcha, no-user, and
-                   send-failed.
-   - /signin/code: Asks the user for the six-digit code that was sent to their
-                   email address. Posts to /auth/verify with Recaptcha. Also
-                   posts to /auth/signin with Recaptcha if the user requests
-                   another sign-in code.
+  You should provide forms that POST to /auth/send-link and/or /auth/send-code.
+  You should also provide pages at the following URLS: /link-sent,
+  /verify-link, and /verify-code. See ROUTES for details.
 
   Your :biff/send-email function must accept the following templates:
    - :signin-link, with parameters :to, :url, and :user-exists.
