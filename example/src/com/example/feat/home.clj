@@ -40,7 +40,7 @@
        [:.text-sm.text-red-600
         (case error
           "recaptcha" (str "You failed the recaptcha test. Try again, "
-                           "and make sure you aren't blocking scripts from Google..")
+                           "and make sure you aren't blocking scripts from Google.")
           "invalid-email" "Invalid email. Try again with a different address."
           "send-failed" (str "We weren't able to send an email to that address. "
                              "If the problem persists, try another address.")
@@ -153,7 +153,8 @@
    (biff/form
     {:action "/auth/send-code"
      :id "signin"
-     :hidden {:email (:email params)}}
+     :hidden {:email (:email params)
+              :on-error "/signin"}}
     (biff/recaptcha-callback "submitSignin" "signin")
     [:button.link.g-recaptcha
      (merge (when site-key
